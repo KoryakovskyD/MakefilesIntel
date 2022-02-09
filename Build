@@ -1,0 +1,162 @@
+#!/bin/bash
+
+#########################################################################
+#
+#                 Построение INTEL
+#
+#########################################################################
+
+#определим версию ядра ОС
+kernver=`uname -r | awk -F'-' '{ print $1 }'`
+
+# Файл библиотечных функций утилит
+Utils_Lib="/opt/mfp/UTILITIES/utils.lib"
+
+# Функция прекращения выполнения сценария
+# [$1] - сообщение об ошибке
+abort()
+{
+    #########################################################
+    DLGretcode=$1
+    case $DLGretcode in
+        1 )
+            SuperEcho -fg Red "\nНажата кнопка \"Отмена\"\n\n"; exit;;
+        3 ) exit;;
+        255 )
+            SuperEcho -fg Red  "\nВыбор не сделан\n\n"; exit;;
+    esac
+
+    [ "$2" != "" ] && echo -e "\n\E[31;1m$2\E[0;0m\n\n"
+}
+
+
+# Проверка сервера с МСВС
+checkPing()
+{
+  if [ "$kernver" \> "3.9.5" ] && [ "$kernver" \< "5.9.8" ]; then   #старше FC19
+    ping $1 -c3 -a -i0,3 -w1 > /dev/null
+    if [ $? != 0 ]; then
+       SuperEcho -fg Red "\nСервер $1 недоступен по сети!\n"
+       exit
+    fi
+  else                                 #FC19 и до нее
+    ping $1 -c3 -a -i0.3 -w1 > /dev/null
+    if [ $? != 0 ]; then
+       SuperEcho -fg Red "\nСервер $1 недоступен по сети!\n"
+       exit
+    fi
+  fi
+}
+
+
+# Удаление о-файлов
+cleanO()
+{
+    menu=" yes <<< off no <<< off"
+    cleanRes=`$DIALOGNAME --auto-placement --separator " " --stdout --title "Clean o-files" --radiolist "Do you want delete o-files?" 25 79 16 $menu`
+    abort "$?"
+}
+
+
+
+# Выбор и построение ФПО
+buildFPO()
+{
+    cd $1
+    menu=""
+    for i in `ls -l | grep '^d' | awk '{print $9}'`; do
+        i="${i#./}"
+         menu="$menu ${i} < off"
+    done
+    cd -
+
+    FPOList=`$DIALOGNAME --separate-output --separator " " --stdout --title "Build INTEL" --checklist "Выберите ФПО" 25 79 16 $menu | sed -r 's/\// /g'`
+    abort "$?"
+
+    if [ "$cleanRes" == "yes" ]; then
+       command="mount ${ServerIP}:${ArchPath} /mnt/net; cd /mnt/net/SRC/INTEL/$1/ASK/kntr; make clean; cd ../test_cpo; make clean; sudo umount -l /mnt/net;"
+       sudo sshpass -p wizard ssh root@${MSVSIp} $command
+    fi
+
+    command="mount ${ServerIP}:${ArchPath} /mnt/net; cd /mnt/net/SRC/INTEL; make OS=MCBC CPU=OLI; sudo umount -l /mnt/net;"
+    sudo sshpass -p wizard ssh root@${MSVSIp} $command
+}
+
+
+################### MAIN ###################
+
+
+# Проверяем работоспособность Xdialog'a
+if  `Xdialog --version > /dev/null 2>&1`; then
+        DIALOGNAME=Xdialog
+else  # если не работает (или просто нет) Xdialog, то пользуем консоль
+      # Проверяем работоспособность dialog'a
+      if `dialog --version > /dev/null 2>&1`; then
+          DIALOGNAME=dialog
+      else #err
+         echo 'ERROR: dialog name undefined'; exit
+      fi
+fi
+
+#Проверяем, существует ли файл библитечных функций утилит
+if [ ! -f $Utils_Lib ]; then
+    if [ -f "`dirname $0`/`basename $Utils_Lib`" ]; then
+        Utils_Lib="`dirname $0`/`basename $Utils_Lib`"
+    else
+        echo "Error: Нет файла \"$Utils_Lib\"!"
+        exit 1
+    fi
+fi
+
+# Подключим библиотеку функций утилит
+. $Utils_Lib
+
+
+ServerIP="`grep ^[S]erverIP Makefile | awk -F'=' '{print $2}'`"
+ArchPath="`grep ^[A]rchPath Makefile | awk -F'=' '{print $2}'`"
+
+# Выбор сервера на котором будет строиться ФПО
+if [ "`grep ^[M]SVSServer Makefile | awk -F'=' '{print $2}'`" == "SAMPLE" ]; then
+    MSVS=`$DIALOGNAME --stdout --title "Build INTEL" --radiolist "Выбор МСВС в котором будет построено ПО" 25 79 16 \
+         1 "ФЛИР.80001-16 (ОС_МСВС_3.0_Изм.3)" "on" \
+         2 "ФЛИР.80001-12 (ОС_МСВС_3.0_Изм.4)" "off" \
+         3 "ЦАВМ.11004-01 (ОС_МСВС_5.0_Изм.8)" "off" \
+         4 "РУСБ.11501-01 (Astra_linux_Smolensk)" "off" | sed -r 's/\// /g'`
+    abort "$?"
+
+    case $MSVS in
+        1) SuperEcho -fg Green "\nОС_МСВС_3.0_Изм.3, Адрес сервера: 192.168.62.3\n\n"
+           checkPing 192.168.62.3
+           MSVSIp=192.168.62.3;;
+        2) SuperEcho -fg Green  "\nОС_МСВС_3.0_Изм.4, Адрес сервера: 192.168.62.4\n\n"
+           checkPing 192.168.62.4
+           MSVSIp=192.168.62.4;;
+        3) SuperEcho -fg Green  "\nОС_МСВС_5.0_Изм.8, Адрес сервера: 192.168.62.5\n\n"
+           checkPing 192.168.62.5
+           MSVSIp=192.168.62.5;;
+    esac
+else
+    MSVSIp="`grep ^[M]SVSServer Makefile | awk -F'=' '{print $2}'`"
+    checkPing $MSVSIp
+fi
+
+
+# Список ФПО для компиляции
+PribList=`ls -l | grep '^d' | awk '{print $9}' | sed 's/COMMON/ /'`
+
+menu=""
+i=0
+for ii in $PribList; do
+if [ "$ii" == " " ]; then
+    continue
+fi
+    let i=$i+1
+    menu="$menu ${ii} < off "
+done
+
+
+prib=`$DIALOGNAME --stdout --title "Build INTEL" --checklist "Выберите прибор(ы):" 35 95 16 $menu | sed -r 's/\// /g'`
+cleanO $prib
+buildFPO $prib
+
+
